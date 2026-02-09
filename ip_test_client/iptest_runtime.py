@@ -3,10 +3,12 @@ import argparse
 import json
 import os
 import platform
+import shutil
 import socket
 import sys
 import urllib.parse
 import urllib.request
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,7 +35,7 @@ class IPTestRuntimeClient:
                         return configured_value
             except Exception:
                 pass
-        return "127.0.0.1:8000"
+        return "timov4.qinyupeng.com:8000"
 
     def fetch_text(self, request_url):
         try:
@@ -147,7 +149,140 @@ class IPTestRuntimeClient:
                 summary_values.append(f"{provider_name}:fail({attempt_value.get('error', '')})")
         return " | ".join(summary_values)
 
-    def print_lookup_response(self, response_mapping):
+    def normalize_value(self, value):
+        if value is None:
+            return "-"
+        if isinstance(value, bool):
+            return "yes" if value else "no"
+        if isinstance(value, list):
+            list_value = ", ".join(str(item_value) for item_value in value if str(item_value).strip())
+            return list_value if list_value else "-"
+        value_text = str(value).strip()
+        return value_text if value_text else "-"
+
+    def display_width(self, value_text):
+        width_value = 0
+        for char_value in str(value_text):
+            if char_value == "\t":
+                width_value += 4
+                continue
+            if unicodedata.combining(char_value):
+                continue
+            if unicodedata.east_asian_width(char_value) in ("F", "W"):
+                width_value += 2
+            else:
+                width_value += 1
+        return width_value
+
+    def pad_display(self, value_text, width_value):
+        text_value = str(value_text)
+        fill_size = max(0, width_value - self.display_width(text_value))
+        return text_value + (" " * fill_size)
+
+    def split_long_word(self, word_text, width_value):
+        output_lines = []
+        chunk_value = ""
+        for char_value in word_text:
+            next_value = chunk_value + char_value
+            if chunk_value and self.display_width(next_value) > width_value:
+                output_lines.append(chunk_value)
+                chunk_value = char_value
+            else:
+                chunk_value = next_value
+        if chunk_value:
+            output_lines.append(chunk_value)
+        return output_lines if output_lines else [""]
+
+    def split_lines(self, value_text, width_value):
+        paragraph_values = str(value_text).splitlines()
+        if not paragraph_values:
+            return [""]
+        wrapped_lines = []
+        for paragraph_value in paragraph_values:
+            if paragraph_value == "":
+                wrapped_lines.append("")
+                continue
+            current_line = ""
+            words_value = paragraph_value.split(" ")
+            for word_value in words_value:
+                if current_line:
+                    candidate_line = f"{current_line} {word_value}"
+                else:
+                    candidate_line = word_value
+                if self.display_width(candidate_line) <= width_value:
+                    current_line = candidate_line
+                    continue
+                if current_line:
+                    wrapped_lines.append(current_line)
+                    current_line = ""
+                if self.display_width(word_value) <= width_value:
+                    current_line = word_value
+                    continue
+                long_word_lines = self.split_long_word(word_value, width_value)
+                wrapped_lines.extend(long_word_lines[:-1])
+                current_line = long_word_lines[-1]
+            wrapped_lines.append(current_line if current_line else "")
+        return wrapped_lines if wrapped_lines else [""]
+
+    def join_parts(self, parts_list):
+        cleaned_parts = [str(part_value).strip() for part_value in parts_list if str(part_value).strip()]
+        return ", ".join(cleaned_parts)
+
+    def build_lookup_target_summary(self, user_target_text, response_mapping):
+        parameter_text = str(user_target_text).strip()
+        target_type_text = str(response_mapping.get("target_type", "")).strip().lower()
+        if not parameter_text:
+            return {
+                "lookup_target": "(auto from local machine)",
+                "checked_ip_label": "My IP",
+                "parameter_value": "(empty)"
+            }
+        if target_type_text == "domain":
+            return {
+                "lookup_target": f"{parameter_text} (domain)",
+                "checked_ip_label": "Resolved IP",
+                "parameter_value": parameter_text
+            }
+        if target_type_text == "ip":
+            return {
+                "lookup_target": f"{parameter_text} (ip)",
+                "checked_ip_label": "Provided IP",
+                "parameter_value": parameter_text
+            }
+        return {
+            "lookup_target": parameter_text,
+            "checked_ip_label": "Checked IP",
+            "parameter_value": parameter_text
+        }
+
+    def print_table_section(self, title_text, rows_list):
+        normalized_rows = []
+        for key_text, value in rows_list:
+            normalized_value = self.normalize_value(value)
+            normalized_rows.append((key_text, normalized_value))
+        if not normalized_rows:
+            return
+        key_width = max(self.display_width("Field"), max(self.display_width(key_text) for key_text, _ in normalized_rows))
+        max_value_size = max(self.display_width("Value"), max(self.display_width(value_text) for _, value_text in normalized_rows))
+        terminal_columns = shutil.get_terminal_size(fallback=(140, 20)).columns
+        available_value_width = terminal_columns - key_width - 7
+        if available_value_width < 36:
+            available_value_width = 36
+        preferred_width = max(64, min(120, max_value_size))
+        value_width = min(preferred_width, available_value_width)
+        separator_text = f"+-{'-' * key_width}-+-{'-' * value_width}-+"
+        print(f"\n{title_text}")
+        print(separator_text)
+        print(f"| {self.pad_display('Field', key_width)} | {self.pad_display('Value', value_width)} |")
+        print(separator_text)
+        for key_text, value_text in normalized_rows:
+            value_lines = self.split_lines(value_text, value_width)
+            print(f"| {self.pad_display(key_text, key_width)} | {self.pad_display(value_lines[0], value_width)} |")
+            for continuation_line in value_lines[1:]:
+                print(f"| {self.pad_display('', key_width)} | {self.pad_display(continuation_line, value_width)} |")
+        print(separator_text)
+
+    def print_lookup_response(self, response_mapping, user_target_text):
         if not response_mapping.get("ok", False):
             print(response_mapping.get("error", "Unknown error"), file=sys.stderr)
             provider_info = response_mapping.get("provider_info", {}) if isinstance(response_mapping.get("provider_info", {}), dict) else {}
@@ -163,53 +298,80 @@ class IPTestRuntimeClient:
         timezone_mapping = response_mapping.get("timezone", {}) if isinstance(response_mapping.get("timezone", {}), dict) else {}
         provider_info = response_mapping.get("provider_info", {}) if isinstance(response_mapping.get("provider_info", {}), dict) else {}
         provider_attempts = self.format_provider_attempts(provider_info)
-        print(f"Input: {response_mapping.get('input', '')}")
-        print(f"Type: {response_mapping.get('target_type', '')}")
-        print(f"IP Type: {response_mapping.get('ip_type', '')}")
-        print(f"Resolved Host: {response_mapping.get('resolved_host', '')}")
-        print(f"Resolved IPs: {', '.join(response_mapping.get('resolved_ips', []))}")
-        print(f"IP: {response_mapping.get('ip', '')}")
-        print(f"Provider: {response_mapping.get('provider', '')}")
-        print(f"Provider Chain: {provider_info.get('lookup_chain', '')}")
-        print(f"Provider Used: {provider_info.get('used_provider', '')}")
-        print(f"Fallback Provider: {provider_info.get('fallback_provider', '')}")
-        print(f"Free Sources Only: {provider_info.get('free_sources_only', '')}")
-        print(f"Provider Attempts: {provider_attempts}")
-        print(f"Continent: {location_mapping.get('continent', '')}")
-        print(f"Continent Code: {location_mapping.get('continent_code', '')}")
-        print(f"Country: {location_mapping.get('country', '')}")
-        print(f"Country Code: {location_mapping.get('country_code', '')}")
-        print(f"Region: {location_mapping.get('region', '')}")
-        print(f"Region Code: {location_mapping.get('region_code', '')}")
-        print(f"City: {location_mapping.get('city', '')}")
-        print(f"Capital: {country_details.get('capital', '')}")
-        print(f"Country Calling Code: {country_details.get('calling_code', '')}")
-        print(f"Country Borders: {country_details.get('borders', '')}")
-        print(f"Country Is EU: {country_details.get('is_eu', '')}")
-        print(f"Country District: {country_details.get('district', '')}")
-        print(f"Currency: {country_details.get('currency', '')}")
-        print(f"Flag Emoji: {country_details.get('flag_emoji', '')}")
-        print(f"Flag Image URL: {country_details.get('flag_image_url', '')}")
-        print(f"Postal: {location_mapping.get('postal', '')}")
-        print(f"Latitude: {location_mapping.get('latitude', '')}")
-        print(f"Longitude: {location_mapping.get('longitude', '')}")
-        print(f"ASN: {network_mapping.get('asn', '')}")
-        print(f"ASN Name: {network_mapping.get('asn_name', '')}")
-        print(f"ISP: {network_mapping.get('isp', '')}")
-        print(f"Organization: {network_mapping.get('organization', '')}")
-        print(f"Domain: {network_mapping.get('domain', '')}")
-        print(f"Reverse DNS: {network_mapping.get('reverse_dns', '')}")
-        print(f"Mobile Network: {network_mapping.get('is_mobile', '')}")
-        print(f"Proxy Network: {network_mapping.get('is_proxy', '')}")
-        print(f"Hosting Network: {network_mapping.get('is_hosting', '')}")
-        print(f"Timezone: {timezone_mapping.get('id', '')}")
-        print(f"Timezone Abbr: {timezone_mapping.get('abbr', '')}")
-        print(f"UTC Offset: {timezone_mapping.get('utc_offset', '')}")
-        print(f"Timezone Offset Seconds: {timezone_mapping.get('offset_seconds', '')}")
-        print(f"Timezone Current Time: {timezone_mapping.get('current_time', '')}")
-        print(f"Timezone Is DST: {timezone_mapping.get('is_dst', '')}")
-        self.print_time_gap(response_mapping)
-        self.print_request_context(response_mapping)
+        timing_mapping = response_mapping.get("timing", {}) if isinstance(response_mapping.get("timing", {}), dict) else {}
+        request_mapping = response_mapping.get("request_context", {}) if isinstance(response_mapping.get("request_context", {}), dict) else {}
+        lookup_summary = self.build_lookup_target_summary(user_target_text, response_mapping)
+        my_location = self.join_parts([location_mapping.get("city", ""), location_mapping.get("region", ""), location_mapping.get("country", "")])
+        asn_name_text = network_mapping.get("asn_name", "") or network_mapping.get("organization", "") or network_mapping.get("isp", "")
+        time_gap_text = ""
+        if timing_mapping.get("gap_ms", "") != "":
+            time_gap_text = f"{timing_mapping.get('gap_ms', '')} ms ({timing_mapping.get('gap_seconds', '')} sec)"
+        important_rows = [
+            ("Lookup Target", lookup_summary.get("lookup_target", "")),
+            (lookup_summary.get("checked_ip_label", "Checked IP"), response_mapping.get("ip", "")),
+            ("ASN Name", asn_name_text),
+            ("IP Location", my_location),
+            ("Server-Client Gap", time_gap_text)
+        ]
+        self.print_table_section("⭐ Important", important_rows)
+        self.print_table_section("📋 Lookup Details", [
+            ("CLI Parameter", lookup_summary.get("parameter_value", "")),
+            ("Server Input", response_mapping.get("input", "")),
+            ("Type", response_mapping.get("target_type", "")),
+            ("IP Type", response_mapping.get("ip_type", "")),
+            ("Resolved Host", response_mapping.get("resolved_host", "")),
+            ("Resolved IPs", response_mapping.get("resolved_ips", [])),
+            ("Provider", response_mapping.get("provider", "")),
+            ("Provider Chain", provider_info.get("lookup_chain", "")),
+            ("Provider Used", provider_info.get("used_provider", "")),
+            ("Fallback Provider", provider_info.get("fallback_provider", "")),
+            ("Provider Attempts", provider_attempts),
+            ("Free Sources Only", provider_info.get("free_sources_only", "")),
+            ("Continent", location_mapping.get("continent", "")),
+            ("Continent Code", location_mapping.get("continent_code", "")),
+            ("Country", location_mapping.get("country", "")),
+            ("Country Code", location_mapping.get("country_code", "")),
+            ("Region", location_mapping.get("region", "")),
+            ("Region Code", location_mapping.get("region_code", "")),
+            ("City", location_mapping.get("city", "")),
+            ("Postal", location_mapping.get("postal", "")),
+            ("Coordinates", self.join_parts([location_mapping.get("latitude", ""), location_mapping.get("longitude", "")])),
+            ("Capital", country_details.get("capital", "")),
+            ("Calling Code", country_details.get("calling_code", "")),
+            ("Borders", country_details.get("borders", "")),
+            ("Is EU", country_details.get("is_eu", "")),
+            ("District", country_details.get("district", "")),
+            ("Currency", country_details.get("currency", "")),
+            ("Flag Emoji", country_details.get("flag_emoji", "")),
+            ("Flag Image URL", country_details.get("flag_image_url", "")),
+            ("ASN", network_mapping.get("asn", "")),
+            ("ISP", network_mapping.get("isp", "")),
+            ("Organization", network_mapping.get("organization", "")),
+            ("Domain", network_mapping.get("domain", "")),
+            ("Reverse DNS", network_mapping.get("reverse_dns", "")),
+            ("Mobile Network", network_mapping.get("is_mobile", "")),
+            ("Proxy Network", network_mapping.get("is_proxy", "")),
+            ("Hosting Network", network_mapping.get("is_hosting", "")),
+            ("Timezone", timezone_mapping.get("id", "")),
+            ("Timezone Abbr", timezone_mapping.get("abbr", "")),
+            ("UTC Offset", timezone_mapping.get("utc_offset", "")),
+            ("Timezone Offset Seconds", timezone_mapping.get("offset_seconds", "")),
+            ("Timezone Current Time", timezone_mapping.get("current_time", "")),
+            ("Timezone Is DST", timezone_mapping.get("is_dst", ""))
+        ])
+        self.print_table_section("🧭 Client & Timing", [
+            ("Client Sent (UTC)", timing_mapping.get("client_sent_at_utc", "")),
+            ("Server Received (UTC)", timing_mapping.get("server_received_at_utc", "")),
+            ("Time Gap (ms)", timing_mapping.get("gap_ms", "")),
+            ("Time Gap (seconds)", timing_mapping.get("gap_seconds", "")),
+            ("Client Timezone", timing_mapping.get("client_timezone_name", "")),
+            ("Client UTC Offset Minutes", timing_mapping.get("client_utc_offset_minutes", "")),
+            ("Clock Skew Detected", timing_mapping.get("clock_skew_detected", "")),
+            ("Request Source IP", request_mapping.get("request_source_ip", "")),
+            ("Client Hostname", request_mapping.get("client_hostname", "")),
+            ("Client Local IP", request_mapping.get("client_local_ip", "")),
+            ("Client Public IP Hint", request_mapping.get("client_public_ip_hint", ""))
+        ])
         return 0
 
     def run(self):
@@ -217,7 +379,7 @@ class IPTestRuntimeClient:
         lookup_target = parsed_arguments.target.strip()
         client_context = self.build_client_context()
         lookup_response = self.lookup_target(lookup_target, client_context)
-        return self.print_lookup_response(lookup_response)
+        return self.print_lookup_response(lookup_response, lookup_target)
 
 
 if __name__ == "__main__":

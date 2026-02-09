@@ -10,7 +10,8 @@ class IPTestInstaller:
     def __init__(self):
         self.script_directory = Path(__file__).resolve().parent
         self.runtime_script_path = self.script_directory / "iptest_runtime.py"
-        self.install_command_names = ["iptest", "ip_test"]
+        self.install_command_names = ["iptest"]
+        self.legacy_command_name = "ip_test"
 
     def is_macos(self):
         return platform.system() == "Darwin"
@@ -42,6 +43,12 @@ python3 \"{self.runtime_script_path}\" \"$@\"
             return 1
         install_directory = self.pick_install_directory()
         install_directory.mkdir(parents=True, exist_ok=True)
+        legacy_command_path = install_directory / self.legacy_command_name
+        if legacy_command_path.exists():
+            try:
+                legacy_command_path.unlink()
+            except Exception:
+                pass
         for command_name in self.install_command_names:
             command_path = self.install_command(install_directory, command_name)
             print(f"Reinstalled command: {command_path}")
