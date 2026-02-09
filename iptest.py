@@ -1,8 +1,7 @@
-#!/usr/bin/env python
-import os
+#!/usr/bin/env python3
 import sys
+from iptest_runtime import IPTestRuntimeClient
+
+
 if __name__ == "__main__":
-	if len(sys.argv)>=2:
-		os.system('curl http://www.cip.cc/'+sys.argv[1])
-	else:
-		os.system('curl http://www.cip.cc')
+    sys.exit(IPTestRuntimeClient().run())
