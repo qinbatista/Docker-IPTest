@@ -29,8 +29,8 @@ jobs:
       - name: Build and push ip_test Docker image
         uses: docker/build-push-action@v4
         with:
-          context: .
-          file: ./Dockerfile
+          context: ./ip_test_server
+          file: ./ip_test_server/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: qinbatista/ip_test:latest
