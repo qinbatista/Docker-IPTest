@@ -35,6 +35,22 @@ Installer behavior:
 - Reinstalls `iptest` and `ip_test` commands every run.
 - Installs into `/usr/local/bin` if writable, otherwise `~/.local/bin`.
 
+## Configure Server Domain
+Set your real server domain in:
+- `/Users/qin/QinProject/DockerProject/Docker-IPTest/ip_test_client/client_config.json`
+
+Example:
+```json
+{
+  "server_url": "https://your-domain.com"
+}
+```
+
+Priority order:
+1. `IPTEST_SERVER_URL` environment variable
+2. `ip_test_client/client_config.json`
+3. default `http://127.0.0.1:8765`
+
 ## Runtime Command
 After install:
 ```bash
@@ -51,3 +67,6 @@ export IPTEST_SERVER_URL="http://your-server-host:8765"
 ## Docker Push Workflow
 `/.github/workflows/docker-image-build.yml` builds and pushes:
 - `qinbatista/ip_test:latest`
+- Required `BuildEnv` environment secrets:
+  - `DOCKERHUB_USERNAME`
+  - `DOCKERHUB_TOKEN`

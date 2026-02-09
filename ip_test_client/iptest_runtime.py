@@ -8,14 +8,32 @@ import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
 
 class IPTestRuntimeClient:
     def __init__(self):
-        self.server_url = os.getenv("IPTEST_SERVER_URL", "http://127.0.0.1:8765")
+        self.config_path = Path(__file__).resolve().parent / "client_config.json"
+        self.server_url = self.load_server_url()
         self.public_ip_urls = ["http://ifconfig.me/ip", "http://api.ipify.org"]
         self.argument_parser = argparse.ArgumentParser(description="IP test runtime client")
         self.argument_parser.add_argument("target", nargs="?", default="")
+
+    def load_server_url(self):
+        configured_url = os.getenv("IPTEST_SERVER_URL", "").strip()
+        if configured_url:
+            return configured_url
+        if self.config_path.exists():
+            try:
+                with self.config_path.open("r", encoding="utf-8") as config_file:
+                    config_mapping = json.load(config_file)
+                if isinstance(config_mapping, dict):
+                    configured_value = str(config_mapping.get("server_url", "")).strip()
+                    if configured_value:
+                        return configured_value
+            except Exception:
+                pass
+        return "http://127.0.0.1:8765"
 
     def fetch_text(self, request_url):
         try:
