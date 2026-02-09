@@ -14,19 +14,15 @@
 ```
 
 ## Server
-Build:
+Universal (recommended) - build and run on current machine:
 ```bash
-docker build -t qinbatista/ip_test:latest ./ip_test_server
+docker build --pull --platform "linux/$(docker info --format '{{.Architecture}}')" -t ip_test:latest ./ip_test_server
+docker rm -f ip_test >/dev/null 2>&1 || true; docker run -d --platform "linux/$(docker info --format '{{.Architecture}}')" --name ip_test --restart=always -p 8765:8765 ip_test:latest
 ```
 
-Pull:
+Universal pull/run (auto-detect amd64 vs arm64):
 ```bash
-docker pull qinbatista/ip_test:latest
-```
-
-Run:
-```bash
-docker rm -f ip_test || true && docker run -d --name ip_test --restart=always -p 8765:8765 qinbatista/ip_test:latest
+PLATFORM="$(uname -m | awk '/arm64|aarch64/{print "linux/arm64"} !/arm64|aarch64/{print "linux/amd64"}')"; docker rm -f ip_test >/dev/null 2>&1 || true; docker image rm -f qinbatista/ip_test:latest >/dev/null 2>&1 || true; docker pull --platform "$PLATFORM" qinbatista/ip_test:latest && docker run -d --platform "$PLATFORM" --name ip_test --restart=always -p 8765:8765 qinbatista/ip_test:latest
 ```
 
 If you need to force architecture:
