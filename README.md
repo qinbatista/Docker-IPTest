@@ -16,13 +16,13 @@
 ## Server
 Universal (recommended) - build and run on current machine:
 ```bash
-docker build --pull --platform "linux/$(docker info --format '{{.Architecture}}')" -t ip_test:latest ./ip_test_server
-docker rm -f ip_test >/dev/null 2>&1 || true; docker run -d --platform "linux/$(docker info --format '{{.Architecture}}')" --name ip_test --restart=always -p 8765:8765 ip_test:latest
+PLATFORM="$(case "$(uname -m)" in x86_64|amd64) echo linux/amd64;; arm64|aarch64) echo linux/arm64;; *) echo linux/amd64;; esac)"; docker rm -f ip_test >/dev/null 2>&1 || true; docker image rm -f ip_test:latest >/dev/null 2>&1 || true; docker build --pull --no-cache --platform "$PLATFORM" -t ip_test:latest ./ip_test_server
+PLATFORM="$(case "$(uname -m)" in x86_64|amd64) echo linux/amd64;; arm64|aarch64) echo linux/arm64;; *) echo linux/amd64;; esac)"; docker run -d --platform "$PLATFORM" --name ip_test --restart=always -p 8765:8765 ip_test:latest
 ```
 
 Universal pull/run (auto-detect amd64 vs arm64):
 ```bash
-PLATFORM="$(uname -m | awk '/arm64|aarch64/{print "linux/arm64"} !/arm64|aarch64/{print "linux/amd64"}')"; docker rm -f ip_test >/dev/null 2>&1 || true; docker image rm -f qinbatista/ip_test:latest >/dev/null 2>&1 || true; docker pull --platform "$PLATFORM" qinbatista/ip_test:latest && docker run -d --platform "$PLATFORM" --name ip_test --restart=always -p 8765:8765 qinbatista/ip_test:latest
+PLATFORM="$(case "$(uname -m)" in x86_64|amd64) echo linux/amd64;; arm64|aarch64) echo linux/arm64;; *) echo linux/amd64;; esac)"; docker rm -f ip_test >/dev/null 2>&1 || true; docker image rm -f qinbatista/ip_test:latest >/dev/null 2>&1 || true; docker pull --platform "$PLATFORM" qinbatista/ip_test:latest && docker run -d --platform "$PLATFORM" --name ip_test --restart=always -p 8765:8765 qinbatista/ip_test:latest
 ```
 
 If you need to force architecture:
