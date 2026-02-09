@@ -16,12 +16,17 @@
 ## Server
 Build:
 ```bash
-docker build -t ip_test:latest ./ip_test_server
+docker build --platform linux/arm64 -t qinbatista/ip_test:latest ./ip_test_server
+```
+
+Pull:
+```bash
+docker pull --platform linux/arm64 qinbatista/ip_test:latest
 ```
 
 Run:
 ```bash
-docker run --rm -p 8765:8765 ip_test:latest
+docker rm -f ip_test && docker run -d --platform linux/arm64 --name ip_test --restart=always -p 8765:8765 qinbatista/ip_test:latest
 ```
 
 ## Client Installer (macOS)
