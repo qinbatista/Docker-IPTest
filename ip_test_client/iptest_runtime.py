@@ -5,7 +5,7 @@ import os
 import platform
 import socket
 import sys
-import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,7 +33,7 @@ class IPTestRuntimeClient:
                         return configured_value
             except Exception:
                 pass
-        return "http://127.0.0.1:8765"
+        return "127.0.0.1:8000"
 
     def fetch_text(self, request_url):
         try:
@@ -82,29 +82,32 @@ class IPTestRuntimeClient:
             "client_platform": platform.platform()
         }
 
-    def parse_http_error(self, error_value):
-        try:
-            decoded_body = error_value.read().decode("utf-8")
-            parsed_body = json.loads(decoded_body)
-            if isinstance(parsed_body, dict):
-                return parsed_body
-            return {"ok": False, "error": f"Server HTTP error: {error_value.code}"}
-        except Exception:
-            return {"ok": False, "error": f"Server HTTP error: {error_value.code}"}
+    def parse_server_address(self):
+        configured_server = self.server_url.strip()
+        if "://" in configured_server:
+            parsed_server = urllib.parse.urlparse(configured_server)
+            host_value = parsed_server.hostname or "127.0.0.1"
+            port_value = parsed_server.port or 8000
+            return host_value, port_value
+        if configured_server.count(":") == 1:
+            host_value, port_text = configured_server.rsplit(":", 1)
+            if port_text.isdigit():
+                return host_value or "127.0.0.1", int(port_text)
+        return configured_server or "127.0.0.1", 8000
 
     def lookup_target(self, target_value, client_context):
-        request_url = f"{self.server_url.rstrip('/')}/lookup"
-        payload_mapping = {"target": target_value, "client_context": client_context}
-        request_data = json.dumps(payload_mapping).encode("utf-8")
-        request_headers = {"Content-Type": "application/json", "User-Agent": "iptest-client/1.0"}
-        request_object = urllib.request.Request(request_url, data=request_data, headers=request_headers, method="POST")
+        host_value, port_value = self.parse_server_address()
+        payload_mapping = {"action": "lookup", "target": target_value, "client_context": client_context}
         try:
-            with urllib.request.urlopen(request_object, timeout=18) as response_value:
-                return json.loads(response_value.read().decode("utf-8"))
-        except urllib.error.HTTPError as error_value:
-            return self.parse_http_error(error_value)
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+                udp_socket.settimeout(18)
+                udp_socket.sendto(json.dumps(payload_mapping).encode("utf-8"), (host_value, port_value))
+                response_bytes, _ = udp_socket.recvfrom(65535)
+            return json.loads(response_bytes.decode("utf-8"))
+        except socket.timeout:
+            return {"ok": False, "error": "UDP request timed out"}
         except Exception as error_value:
-            return {"ok": False, "error": f"Server request failed: {error_value}"}
+            return {"ok": False, "error": f"UDP request failed: {error_value}"}
 
     def print_time_gap(self, response_mapping):
         timing_mapping = response_mapping.get("timing", {}) if isinstance(response_mapping.get("timing", {}), dict) else {}

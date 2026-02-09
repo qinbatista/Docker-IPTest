@@ -6,7 +6,8 @@
 ├── ip_test_server/
 │   ├── ip_test_server.py
 │   ├── Dockerfile
-│   └── .dockerignore
+│   ├── .dockerignore
+│   └── log.txt
 ├── ip_test_client/
 │   ├── ip_test_installer.py
 │   └── iptest_runtime.py
@@ -14,24 +15,20 @@
 ```
 
 ## Server
-Universal (recommended) - build and run on current machine:
+Build local image and run:
 ```bash
-PLATFORM="$(case "$(uname -m)" in x86_64|amd64) echo linux/amd64;; arm64|aarch64) echo linux/arm64;; *) echo linux/amd64;; esac)"; docker rm -f ip_test >/dev/null 2>&1 || true; docker image rm -f ip_test:latest >/dev/null 2>&1 || true; docker build --pull --no-cache --platform "$PLATFORM" -t ip_test:latest ./ip_test_server
-PLATFORM="$(case "$(uname -m)" in x86_64|amd64) echo linux/amd64;; arm64|aarch64) echo linux/arm64;; *) echo linux/amd64;; esac)"; docker run -d --platform "$PLATFORM" --name ip_test --restart=always -p 8765:8765 ip_test:latest
+docker build --pull -t ip_test:latest ./ip_test_server
+touch ./ip_test_server/log.txt; docker rm -f ip_test >/dev/null 2>&1 || true; docker run -d --name ip_test --restart=always -p 8000:8000/udp -e IP_TEST_LOG_FILE=/app/log.txt -v "$(pwd)/ip_test_server/log.txt:/app/log.txt" ip_test:latest
 ```
 
-Universal pull/run (auto-detect amd64 vs arm64):
+Pull and run published image (auto architecture):
 ```bash
-PLATFORM="$(case "$(uname -m)" in x86_64|amd64) echo linux/amd64;; arm64|aarch64) echo linux/arm64;; *) echo linux/amd64;; esac)"; docker rm -f ip_test >/dev/null 2>&1 || true; docker image rm -f qinbatista/ip_test:latest >/dev/null 2>&1 || true; docker pull --platform "$PLATFORM" qinbatista/ip_test:latest && docker run -d --platform "$PLATFORM" --name ip_test --restart=always -p 8765:8765 qinbatista/ip_test:latest
+touch ./ip_test_server/log.txt; docker rm -f ip_test >/dev/null 2>&1 || true; docker pull qinbatista/ip_test:latest && docker run -d --name ip_test --restart=always -p 8000:8000/udp -e IP_TEST_LOG_FILE=/app/log.txt -v "$(pwd)/ip_test_server/log.txt:/app/log.txt" qinbatista/ip_test:latest
 ```
 
-If you need to force architecture:
+Build and push multi-arch image (manual publish):
 ```bash
-# x86_64 host
-docker rm -f ip_test || true && docker pull --platform linux/amd64 qinbatista/ip_test:latest && docker run -d --platform linux/amd64 --name ip_test --restart=always -p 8765:8765 qinbatista/ip_test:latest
-
-# arm64 host
-docker rm -f ip_test || true && docker pull --platform linux/arm64 qinbatista/ip_test:latest && docker run -d --platform linux/arm64 --name ip_test --restart=always -p 8765:8765 qinbatista/ip_test:latest
+docker buildx build --platform linux/amd64,linux/arm64 -t qinbatista/ip_test:latest --push ./ip_test_server
 ```
 
 ## Client Installer (macOS)
@@ -52,14 +49,14 @@ Set your real server domain in:
 Example:
 ```json
 {
-  "server_url": "https://your-domain.com"
+  "server_url": "your-server-host:8000"
 }
 ```
 
 Priority order:
 1. `IPTEST_SERVER_URL` environment variable
 2. `ip_test_client/client_config.json`
-3. default `http://127.0.0.1:8765`
+3. default `127.0.0.1:8000`
 
 ## Runtime Command
 After install:
@@ -71,7 +68,13 @@ iptest www.google.com
 
 Custom server URL:
 ```bash
-export IPTEST_SERVER_URL="http://your-server-host:8765"
+export IPTEST_SERVER_URL="your-server-host:8000"
+```
+
+## Server Log File
+Read server log:
+```bash
+tail -f ./ip_test_server/log.txt
 ```
 
 ## Docker Push Workflow

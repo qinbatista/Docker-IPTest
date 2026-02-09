@@ -27,7 +27,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push ip_test Docker image
+      - name: Build and push ip_test multi-arch Docker image
         uses: docker/build-push-action@v4
         with:
           context: ./ip_test_server

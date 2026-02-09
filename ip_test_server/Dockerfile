@@ -7,6 +7,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends dnsutils ca-cer
 
 COPY ip_test_server.py /app/ip_test_server.py
 
-EXPOSE 8765
+EXPOSE 8000/udp
 
-CMD ["python3", "/app/ip_test_server.py", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["python3", "/app/ip_test_server.py", "--host", "0.0.0.0", "--port", "8000"]

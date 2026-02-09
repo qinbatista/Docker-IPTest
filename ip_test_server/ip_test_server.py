@@ -2,13 +2,34 @@
 import argparse
 import ipaddress
 import json
+import os
 import re
 import socket
 import subprocess
+import threading
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+
+class IPTestServerLogWriter:
+    def __init__(self):
+        configured_path = os.getenv("IP_TEST_LOG_FILE", "").strip()
+        default_path = Path(__file__).resolve().parent / "log.txt"
+        self.log_file_path = Path(configured_path).expanduser() if configured_path else default_path
+        self.write_lock = threading.Lock()
+        self.log_file_path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_file_path.touch(exist_ok=True)
+
+    def write(self, level_text, message_text):
+        try:
+            timestamp_text = datetime.now(timezone.utc).isoformat()
+            with self.write_lock:
+                with self.log_file_path.open("a", encoding="utf-8") as log_file:
+                    log_file.write(f"{timestamp_text} [{level_text}] {message_text}\n")
+        except Exception:
+            return
 
 
 class IPTestLookupService:
@@ -375,39 +396,13 @@ class TimeGapService:
         }
 
 
-class IPTestRequestHandler(BaseHTTPRequestHandler):
-    lookup_service = IPTestLookupService()
-    time_gap_service = TimeGapService()
-
-    def write_json(self, status_code, response_mapping):
-        encoded_payload = json.dumps(response_mapping).encode("utf-8")
-        self.send_response(status_code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(encoded_payload)))
-        self.end_headers()
-        self.wfile.write(encoded_payload)
-
-    def read_json_body(self):
-        content_length = int(self.headers.get("Content-Length", "0"))
-        if content_length <= 0:
-            return {}
-        body_value = self.rfile.read(content_length)
-        if not body_value:
-            return {}
-        try:
-            parsed_body = json.loads(body_value.decode("utf-8"))
-            if isinstance(parsed_body, dict):
-                return parsed_body
-            return {}
-        except Exception:
-            return {}
-
-    def extract_source_ip(self):
-        forwarded_for_value = self.headers.get("X-Forwarded-For", "")
-        forwarded_ip = forwarded_for_value.split(",", 1)[0].strip() if forwarded_for_value else ""
-        if forwarded_ip:
-            return forwarded_ip
-        return self.client_address[0]
+class IPTestUDPServer:
+    def __init__(self, host_value, port_value, lookup_service, time_gap_service, server_logger):
+        self.host_value = host_value
+        self.port_value = port_value
+        self.lookup_service = lookup_service
+        self.time_gap_service = time_gap_service
+        self.server_logger = server_logger
 
     def choose_default_target(self, source_ip, client_context):
         public_hint = str(client_context.get("client_public_ip_hint", "")).strip()
@@ -422,74 +417,92 @@ class IPTestRequestHandler(BaseHTTPRequestHandler):
             return source_ip
         return ""
 
-    def process_lookup(self, target_value, client_context):
+    def build_request_context(self, source_ip, client_context):
+        return {
+            "request_source_ip": source_ip,
+            "client_hostname": str(client_context.get("client_hostname", "")),
+            "client_local_ip": str(client_context.get("client_local_ip", "")),
+            "client_public_ip_hint": str(client_context.get("client_public_ip_hint", "")),
+            "client_platform": str(client_context.get("client_platform", "")),
+            "protocol": "udp"
+        }
+
+    def process_lookup(self, source_ip, target_value, client_context):
+        request_start_utc = datetime.now(timezone.utc)
         server_received_utc = datetime.now(timezone.utc)
-        source_ip = self.extract_source_ip()
         effective_target = target_value.strip() if target_value.strip() else self.choose_default_target(source_ip, client_context)
         if not effective_target:
             lookup_response = {"ok": False, "error": "Could not determine lookup target"}
         else:
             lookup_response = self.lookup_service.lookup_target(effective_target)
-        timing_payload = self.time_gap_service.build_timing_payload(client_context, server_received_utc)
-        request_context = {
-            "request_source_ip": source_ip,
-            "x_forwarded_for": self.headers.get("X-Forwarded-For", ""),
-            "client_hostname": str(client_context.get("client_hostname", "")),
-            "client_local_ip": str(client_context.get("client_local_ip", "")),
-            "client_public_ip_hint": str(client_context.get("client_public_ip_hint", "")),
-            "client_platform": str(client_context.get("client_platform", ""))
-        }
-        lookup_response["timing"] = timing_payload
-        lookup_response["request_context"] = request_context
-        if lookup_response.get("ok", False):
-            return 200, lookup_response
-        return 400, lookup_response
+        lookup_response["timing"] = self.time_gap_service.build_timing_payload(client_context, server_received_utc)
+        lookup_response["request_context"] = self.build_request_context(source_ip, client_context)
+        status_code = 200 if lookup_response.get("ok", False) else 400
+        duration_ms = int((datetime.now(timezone.utc) - request_start_utc).total_seconds() * 1000)
+        self.server_logger.write("INFO", f"protocol=udp source_ip={source_ip} target={effective_target} status={status_code} duration_ms={duration_ms}")
+        return lookup_response
 
-    def do_GET(self):
-        parsed_path = urllib.parse.urlparse(self.path)
-        match parsed_path.path:
-            case "/health":
-                self.write_json(200, {"ok": True, "message": "ip test server is running"})
-            case "/lookup":
-                query_mapping = urllib.parse.parse_qs(parsed_path.query)
-                target_value = query_mapping.get("target", [""])[0]
-                status_code, lookup_response = self.process_lookup(target_value, {})
-                self.write_json(status_code, lookup_response)
+    def process_health(self, source_ip, client_context):
+        server_received_utc = datetime.now(timezone.utc)
+        response_mapping = {"ok": True, "message": "ip test udp server is running"}
+        response_mapping["timing"] = self.time_gap_service.build_timing_payload(client_context, server_received_utc)
+        response_mapping["request_context"] = self.build_request_context(source_ip, client_context)
+        self.server_logger.write("INFO", f"protocol=udp source_ip={source_ip} action=health status=200 duration_ms=0")
+        return response_mapping
+
+    def parse_payload(self, payload_bytes):
+        try:
+            payload_mapping = json.loads(payload_bytes.decode("utf-8"))
+            if isinstance(payload_mapping, dict):
+                return payload_mapping
+            return {}
+        except Exception as error_value:
+            self.server_logger.write("WARNING", f"invalid_udp_payload error={error_value}")
+            return {}
+
+    def process_packet(self, payload_bytes, client_address):
+        source_ip = client_address[0]
+        payload_mapping = self.parse_payload(payload_bytes)
+        if not payload_mapping:
+            return {"ok": False, "error": "Invalid request payload", "request_context": {"request_source_ip": source_ip, "protocol": "udp"}}
+        action_value = str(payload_mapping.get("action", "lookup")).strip().lower()
+        client_context = payload_mapping.get("client_context", {}) if isinstance(payload_mapping.get("client_context", {}), dict) else {}
+        target_value = str(payload_mapping.get("target", ""))
+        match action_value:
+            case "health":
+                return self.process_health(source_ip, client_context)
             case _:
-                self.write_json(404, {"ok": False, "error": "Route not found"})
+                return self.process_lookup(source_ip, target_value, client_context)
 
-    def do_POST(self):
-        parsed_path = urllib.parse.urlparse(self.path)
-        match parsed_path.path:
-            case "/lookup":
-                parsed_body = self.read_json_body()
-                target_value = str(parsed_body.get("target", ""))
-                client_context = parsed_body.get("client_context", {}) if isinstance(parsed_body.get("client_context", {}), dict) else {}
-                status_code, lookup_response = self.process_lookup(target_value, client_context)
-                self.write_json(status_code, lookup_response)
-            case _:
-                self.write_json(404, {"ok": False, "error": "Route not found"})
-
-    def log_message(self, message_format, *format_values):
-        return
+    def run(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+            udp_socket.bind((self.host_value, self.port_value))
+            self.server_logger.write("INFO", f"server_start protocol=udp host={self.host_value} port={self.port_value} log_file={self.server_logger.log_file_path}")
+            print(f"IP test UDP server listening on {self.host_value}:{self.port_value}")
+            try:
+                while True:
+                    payload_bytes, client_address = udp_socket.recvfrom(65535)
+                    response_mapping = self.process_packet(payload_bytes, client_address)
+                    udp_socket.sendto(json.dumps(response_mapping).encode("utf-8"), client_address)
+            except KeyboardInterrupt:
+                self.server_logger.write("INFO", "server_stop reason=keyboard_interrupt")
+            finally:
+                self.server_logger.write("INFO", "server_stop reason=shutdown")
 
 
 class IPTestServerApplication:
     def __init__(self):
         self.argument_parser = argparse.ArgumentParser(description="IP test lookup server")
-        self.argument_parser.add_argument("--host", default="127.0.0.1")
-        self.argument_parser.add_argument("--port", type=int, default=8765)
+        self.argument_parser.add_argument("--host", default="0.0.0.0")
+        self.argument_parser.add_argument("--port", type=int, default=8000)
+        self.server_logger = IPTestServerLogWriter()
+        self.lookup_service = IPTestLookupService()
+        self.time_gap_service = TimeGapService()
 
     def run(self):
         parsed_arguments = self.argument_parser.parse_args()
-        http_server = ThreadingHTTPServer((parsed_arguments.host, parsed_arguments.port), IPTestRequestHandler)
-        print(f"IP test server listening on http://{parsed_arguments.host}:{parsed_arguments.port}")
-        try:
-            http_server.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            http_server.server_close()
+        udp_server = IPTestUDPServer(parsed_arguments.host, parsed_arguments.port, self.lookup_service, self.time_gap_service, self.server_logger)
+        udp_server.run()
 
 
 if __name__ == "__main__":
