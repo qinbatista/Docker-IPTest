@@ -16,17 +16,26 @@
 ## Server
 Build:
 ```bash
-docker build --platform linux/arm64 -t qinbatista/ip_test:latest ./ip_test_server
+docker build -t qinbatista/ip_test:latest ./ip_test_server
 ```
 
 Pull:
 ```bash
-docker pull --platform linux/arm64 qinbatista/ip_test:latest
+docker pull qinbatista/ip_test:latest
 ```
 
 Run:
 ```bash
-docker rm -f ip_test && docker run -d --platform linux/arm64 --name ip_test --restart=always -p 8765:8765 qinbatista/ip_test:latest
+docker rm -f ip_test || true && docker run -d --name ip_test --restart=always -p 8765:8765 qinbatista/ip_test:latest
+```
+
+If you need to force architecture:
+```bash
+# x86_64 host
+docker rm -f ip_test || true && docker pull --platform linux/amd64 qinbatista/ip_test:latest && docker run -d --platform linux/amd64 --name ip_test --restart=always -p 8765:8765 qinbatista/ip_test:latest
+
+# arm64 host
+docker rm -f ip_test || true && docker pull --platform linux/arm64 qinbatista/ip_test:latest && docker run -d --platform linux/arm64 --name ip_test --restart=always -p 8765:8765 qinbatista/ip_test:latest
 ```
 
 ## Client Installer (macOS)
