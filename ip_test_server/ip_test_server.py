@@ -25,9 +25,11 @@ class IPTestServerLogWriter:
     def write(self, level_text, message_text):
         try:
             timestamp_text = datetime.now(timezone.utc).isoformat()
+            log_line = f"{timestamp_text} [{level_text}] {message_text}"
             with self.write_lock:
                 with self.log_file_path.open("a", encoding="utf-8") as log_file:
-                    log_file.write(f"{timestamp_text} [{level_text}] {message_text}\n")
+                    log_file.write(f"{log_line}\n")
+            print(log_line, flush=True)
         except Exception:
             return
 

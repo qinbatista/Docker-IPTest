@@ -17,13 +17,14 @@
 ## Server
 Build local image and run:
 ```bash
-docker build --pull -t ip_test:latest ./ip_test_server
-touch ./ip_test_server/log.txt; docker rm -f ip_test >/dev/null 2>&1 || true; docker run -d --name ip_test --restart=always -p 8000:8000/udp -e IP_TEST_LOG_FILE=/app/log.txt -v "$(pwd)/ip_test_server/log.txt:/app/log.txt" ip_test:latest
+docker rm -f ip_test >/dev/null 2>&1 || true; docker build --pull -t ip_test:latest ./ip_test_server
+docker run -d --name ip_test --restart=always -p 8000:8000/udp ip_test:latest
 ```
 
 Pull and run published image (auto architecture):
 ```bash
-touch ./ip_test_server/log.txt; docker rm -f ip_test >/dev/null 2>&1 || true; docker pull qinbatista/ip_test:latest && docker run -d --name ip_test --restart=always -p 8000:8000/udp -e IP_TEST_LOG_FILE=/app/log.txt -v "$(pwd)/ip_test_server/log.txt:/app/log.txt" qinbatista/ip_test:latest
+docker rm -f ip_test >/dev/null 2>&1 || true; docker pull qinbatista/ip_test:latest
+docker run -d --name ip_test --restart=always -p 8000:8000/udp qinbatista/ip_test:latest
 ```
 
 Build and push multi-arch image (manual publish):
@@ -72,9 +73,14 @@ export IPTEST_SERVER_URL="your-server-host:8000"
 ```
 
 ## Server Log File
-Read server log:
+Read container log:
 ```bash
-tail -f ./ip_test_server/log.txt
+docker logs -f ip_test
+```
+
+Read log file inside container:
+```bash
+docker exec -it ip_test sh -c "tail -f /app/log.txt"
 ```
 
 ## Docker Push Workflow
