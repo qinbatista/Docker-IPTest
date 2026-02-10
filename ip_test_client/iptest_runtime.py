@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
+import ipaddress
 import json
+import math
 import os
 import platform
 import re
@@ -14,6 +16,11 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    from wcwidth import wcswidth
+except Exception:
+    wcswidth = None
+
 
 class IPTestRuntimeClient:
     def __init__(self):
@@ -22,8 +29,96 @@ class IPTestRuntimeClient:
         self.udp_timeout_seconds = self.parse_positive_int(os.getenv("IPTEST_UDP_TIMEOUT_SECONDS", "35"), 35)
         self.speed_test_expected_seconds = self.parse_positive_int(os.getenv("IPTEST_SPEED_TEST_EXPECTED_SECONDS", "12"), 12)
         self.public_ip_urls = ["http://ifconfig.me/ip", "http://api.ipify.org"]
+        self.field_emoji_map = self.build_field_emoji_map()
         self.argument_parser = argparse.ArgumentParser(description="IP test runtime client")
         self.argument_parser.add_argument("target", nargs="?", default="")
+
+    def build_field_emoji_map(self):
+        return {
+            "Lookup Target": "🎯",
+            "My IP": "🌐",
+            "Resolved IP": "🔎",
+            "Provided IP": "📥",
+            "Checked IP": "🧭",
+            "ASN Name": "🏢",
+            "IP Location": "📍",
+            "Server-Client Gap": "🕒",
+            "CLI Parameter": "💻",
+            "Server Input": "📨",
+            "Type": "🧾",
+            "IP Type": "🧬",
+            "Resolved Host": "🖥",
+            "Resolved IPs": "🔗",
+            "Provider": "🏭",
+            "Provider Chain": "🔁",
+            "Provider Used": "✅",
+            "Fallback Provider": "🔄",
+            "Provider Attempts": "🧪",
+            "Free Sources Only": "🆓",
+            "Continent": "🌍",
+            "Continent Code": "🔠",
+            "Country": "🌎",
+            "Country Code": "🔤",
+            "Region": "📌",
+            "Region Code": "🔡",
+            "City": "🏙",
+            "Postal": "📮",
+            "Coordinates": "🧭",
+            "Capital": "🏛",
+            "Calling Code": "📞",
+            "Borders": "🧱",
+            "Is EU": "🔷",
+            "District": "📌",
+            "Currency": "💱",
+            "Flag Emoji": "🚩",
+            "Flag Image URL": "🖼",
+            "ASN": "🆔",
+            "ISP": "📡",
+            "Organization": "🏢",
+            "Domain": "🌍",
+            "Reverse DNS": "🔁",
+            "Mobile Network": "📱",
+            "Proxy Network": "🔒",
+            "Hosting Network": "🏠",
+            "Timezone": "🕒",
+            "Timezone Abbr": "🕰",
+            "UTC Offset": "🕒",
+            "Timezone Offset Seconds": "⏳",
+            "Timezone Current Time": "🕑",
+            "Timezone Is DST": "🌞",
+            "Client Sent (UTC)": "📤",
+            "Server Received (UTC)": "📥",
+            "Time Gap (ms)": "🕒",
+            "Time Gap (seconds)": "⏳",
+            "Client Timezone": "🕒",
+            "Client UTC Offset Minutes": "🕒",
+            "Clock Skew Detected": "⚠",
+            "Request Source IP": "📌",
+            "Client Hostname": "💻",
+            "Client Local IP": "🏠",
+            "Client Public IP Hint": "🌎",
+            "Local Download": "📥",
+            "Local Upload": "📤",
+            "Network Mode": "🧵",
+            "Network Note": "📝",
+            "Speed Scope": "📏",
+            "Speed Local IP": "🏠",
+            "Local LAN IP": "🏘",
+            "Local Public IP": "🌐",
+            "Download Raw": "📉",
+            "Upload Raw": "📈",
+            "Speed Domain": "🌍",
+            "Speed Remote IP": "🛰",
+            "IP Path": "🛤",
+            "IP Distance": "📏",
+            "Distance Basis": "📚",
+            "Server Location": "📍",
+            "Speed Interface": "🔌",
+            "Local Latency": "⚡",
+            "Local Down Resp": "📉",
+            "Local Up Resp": "📈",
+            "Local Speed Note": "📌"
+        }
 
     def parse_positive_int(self, value_text, default_value):
         try:
@@ -57,6 +152,13 @@ class IPTestRuntimeClient:
         except Exception:
             return ""
 
+    def fetch_json(self, request_url):
+        try:
+            with urllib.request.urlopen(request_url, timeout=10) as response_value:
+                return json.loads(response_value.read().decode("utf-8"))
+        except Exception:
+            return {}
+
     def is_ip_value(self, value):
         parts = value.split(".")
         if len(parts) != 4:
@@ -65,6 +167,13 @@ class IPTestRuntimeClient:
             if not part.isdigit() or int(part) < 0 or int(part) > 255:
                 return False
         return True
+
+    def is_public_ipv4(self, ip_value):
+        try:
+            parsed_ip = ipaddress.ip_address(str(ip_value))
+            return parsed_ip.version == 4 and parsed_ip.is_global
+        except Exception:
+            return False
 
     def detect_public_ip(self):
         for request_url in self.public_ip_urls:
@@ -174,10 +283,18 @@ class IPTestRuntimeClient:
         return value_text if value_text else "-"
 
     def display_width(self, value_text):
+        cleaned_text = str(value_text).replace("\u200d", "").replace("\ufe0f", "").replace("\ufe0e", "")
+        if wcswidth is not None:
+            measured_width = wcswidth(cleaned_text)
+            if measured_width >= 0:
+                return measured_width
         width_value = 0
-        for char_value in str(value_text):
+        for char_value in cleaned_text:
             if char_value == "\t":
                 width_value += 4
+                continue
+            if self.is_emoji_char(char_value):
+                width_value += 2
                 continue
             if unicodedata.combining(char_value):
                 continue
@@ -186,6 +303,26 @@ class IPTestRuntimeClient:
             else:
                 width_value += 1
         return width_value
+
+    def is_emoji_char(self, char_value):
+        code_value = ord(char_value)
+        return (0x1F1E6 <= code_value <= 0x1F1FF) or (0x1F300 <= code_value <= 0x1FAFF) or (0x2600 <= code_value <= 0x26FF) or (0x2700 <= code_value <= 0x27BF)
+
+    def label_has_emoji(self, label_text):
+        cleaned_text = str(label_text).strip()
+        if not cleaned_text:
+            return False
+        return self.is_emoji_char(cleaned_text[0])
+
+    def emoji_label(self, label_text):
+        cleaned_text = str(label_text).strip()
+        if not cleaned_text:
+            return cleaned_text
+        if self.label_has_emoji(cleaned_text):
+            return cleaned_text
+        emoji_value = self.field_emoji_map.get(cleaned_text, "🔹")
+        emoji_value = emoji_value.replace("\ufe0f", "").replace("\ufe0e", "").replace("\u200d", "")
+        return f"{emoji_value} {cleaned_text}"
 
     def pad_display(self, value_text, width_value):
         text_value = str(value_text)
@@ -207,39 +344,30 @@ class IPTestRuntimeClient:
         return output_lines if output_lines else [""]
 
     def split_lines(self, value_text, width_value):
-        paragraph_values = str(value_text).splitlines()
-        if not paragraph_values:
+        normalized_text = re.sub(r"\s+", " ", str(value_text).replace("\r", " ").replace("\n", " ")).strip()
+        if not normalized_text:
             return [""]
-        wrapped_lines = []
-        for paragraph_value in paragraph_values:
-            if paragraph_value == "":
-                wrapped_lines.append("")
-                continue
-            current_line = ""
-            words_value = paragraph_value.split(" ")
-            for word_value in words_value:
-                if current_line:
-                    candidate_line = f"{current_line} {word_value}"
-                else:
-                    candidate_line = word_value
-                if self.display_width(candidate_line) <= width_value:
-                    current_line = candidate_line
-                    continue
-                if current_line:
-                    wrapped_lines.append(current_line)
-                    current_line = ""
-                if self.display_width(word_value) <= width_value:
-                    current_line = word_value
-                    continue
-                long_word_lines = self.split_long_word(word_value, width_value)
-                wrapped_lines.extend(long_word_lines[:-1])
-                current_line = long_word_lines[-1]
-            wrapped_lines.append(current_line if current_line else "")
-        return wrapped_lines if wrapped_lines else [""]
+        if self.display_width(normalized_text) <= width_value:
+            return [normalized_text]
+        suffix_text = "..."
+        suffix_width = self.display_width(suffix_text)
+        allowed_width = max(0, width_value - suffix_width)
+        clipped_text = ""
+        for char_value in normalized_text:
+            if self.display_width(clipped_text + char_value) > allowed_width:
+                break
+            clipped_text += char_value
+        return [f"{clipped_text}{suffix_text}"]
 
     def join_parts(self, parts_list):
         cleaned_parts = [str(part_value).strip() for part_value in parts_list if str(part_value).strip()]
         return ", ".join(cleaned_parts)
+
+    def parse_float(self, value):
+        try:
+            return float(value)
+        except Exception:
+            return None
 
     def build_lookup_target_summary(self, user_target_text, response_mapping):
         parameter_text = str(user_target_text).strip()
@@ -310,6 +438,119 @@ class IPTestRuntimeClient:
             return "-"
         return f"{numeric_value / 1000000:.3f} Mbps"
 
+    def resolve_host_ips(self, host_value):
+        resolved_values = []
+        try:
+            for address_info in socket.getaddrinfo(str(host_value).strip(), None):
+                resolved_ip = address_info[4][0]
+                if resolved_ip and resolved_ip not in resolved_values:
+                    resolved_values.append(resolved_ip)
+        except Exception:
+            return []
+        return resolved_values
+
+    def resolve_host_ips_public_dns(self, host_value):
+        response_mapping = self.fetch_json(f"https://dns.google/resolve?name={urllib.parse.quote(str(host_value).strip())}&type=A")
+        answer_values = response_mapping.get("Answer", []) if isinstance(response_mapping.get("Answer", []), list) else []
+        output_values = []
+        for answer_value in answer_values:
+            if not isinstance(answer_value, dict):
+                continue
+            resolved_ip = str(answer_value.get("data", "")).strip()
+            if self.is_ip_value(resolved_ip) and resolved_ip not in output_values:
+                output_values.append(resolved_ip)
+        return output_values
+
+    def choose_ipv4(self, ip_values):
+        for ip_value in ip_values:
+            if self.is_ip_value(ip_value):
+                return ip_value
+        return ip_values[0] if ip_values else ""
+
+    def choose_speed_server_ip(self, host_value, local_resolved_ips):
+        combined_values = []
+        for ip_value in local_resolved_ips + self.resolve_host_ips_public_dns(host_value):
+            if ip_value and ip_value not in combined_values:
+                combined_values.append(ip_value)
+        for ip_value in combined_values:
+            if self.is_public_ipv4(ip_value):
+                return ip_value
+        return self.choose_ipv4(combined_values)
+
+    def resolve_interface_ipv4(self, interface_name):
+        cleaned_name = str(interface_name).strip()
+        if not cleaned_name or cleaned_name == "-":
+            return ""
+        try:
+            command_result = subprocess.run(["ifconfig", cleaned_name], capture_output=True, text=True, timeout=6)
+        except Exception:
+            return ""
+        output_text = f"{command_result.stdout}\n{command_result.stderr}"
+        candidate_values = re.findall(r"\binet\s+(\d+\.\d+\.\d+\.\d+)", output_text)
+        for ip_value in candidate_values:
+            if self.is_ip_value(ip_value) and ip_value != "127.0.0.1":
+                return ip_value
+        for ip_value in candidate_values:
+            if self.is_ip_value(ip_value):
+                return ip_value
+        return ""
+
+    def lookup_ip_geo(self, ip_value):
+        if not self.is_ip_value(str(ip_value)):
+            return {}
+        ipwho_payload = self.fetch_json(f"http://ipwho.is/{urllib.parse.quote(str(ip_value))}")
+        if isinstance(ipwho_payload, dict) and ipwho_payload.get("success", False):
+            return {
+                "latitude": ipwho_payload.get("latitude", ""),
+                "longitude": ipwho_payload.get("longitude", ""),
+                "city": ipwho_payload.get("city", ""),
+                "region": ipwho_payload.get("region", ""),
+                "country": ipwho_payload.get("country", "")
+            }
+        ipapi_payload = self.fetch_json(f"http://ip-api.com/json/{urllib.parse.quote(str(ip_value))}?fields=status,lat,lon,city,regionName,country")
+        if isinstance(ipapi_payload, dict) and ipapi_payload.get("status") == "success":
+            return {
+                "latitude": ipapi_payload.get("lat", ""),
+                "longitude": ipapi_payload.get("lon", ""),
+                "city": ipapi_payload.get("city", ""),
+                "region": ipapi_payload.get("regionName", ""),
+                "country": ipapi_payload.get("country", "")
+            }
+        return {}
+
+    def haversine_km(self, lat1, lon1, lat2, lon2):
+        lat1_value = self.parse_float(lat1)
+        lon1_value = self.parse_float(lon1)
+        lat2_value = self.parse_float(lat2)
+        lon2_value = self.parse_float(lon2)
+        if lat1_value is None or lon1_value is None or lat2_value is None or lon2_value is None:
+            return None
+        earth_radius_km = 6371.0
+        delta_lat = math.radians(lat2_value - lat1_value)
+        delta_lon = math.radians(lon2_value - lon1_value)
+        lat1_radians = math.radians(lat1_value)
+        lat2_radians = math.radians(lat2_value)
+        a_value = math.sin(delta_lat / 2) ** 2 + math.cos(lat1_radians) * math.cos(lat2_radians) * math.sin(delta_lon / 2) ** 2
+        c_value = 2 * math.atan2(math.sqrt(a_value), math.sqrt(1 - a_value))
+        return earth_radius_km * c_value
+
+    def format_distance_text(self, distance_km):
+        if distance_km is None:
+            return "-"
+        distance_miles = distance_km * 0.621371
+        return f"{distance_km:.1f} km ({distance_miles:.1f} mi)"
+
+    def detect_network_mode(self, interface_name):
+        cleaned_name = str(interface_name).strip().lower()
+        if not cleaned_name or cleaned_name == "-":
+            return "Unknown", "Interface is not reported"
+        vpn_prefix_values = ("utun", "tun", "tap", "ppp", "ipsec", "wg", "tailscale", "zt")
+        if cleaned_name.startswith(vpn_prefix_values):
+            return "VPN/Tunnel", f"Interface {cleaned_name} looks like a tunnel interface"
+        if cleaned_name in ("lo0", "lo"):
+            return "Unclear", f"Interface {cleaned_name} is loopback; actual egress may be hidden by system routing/proxy"
+        return "Direct/Local Network", f"Interface {cleaned_name} looks like a direct network adapter"
+
     def extract_speed_endpoint(self, output_text):
         matched_verbose = re.search(r"Test Endpoint:\s*([^\n]+)", str(output_text), flags=re.IGNORECASE)
         if matched_verbose:
@@ -341,6 +582,42 @@ class IPTestRuntimeClient:
             "source": default_source
         }
 
+    def enrich_speed_test_mapping(self, speed_test_mapping, lookup_response, client_context):
+        output_mapping = dict(speed_test_mapping)
+        request_mapping = lookup_response.get("request_context", {}) if isinstance(lookup_response.get("request_context", {}), dict) else {}
+        location_mapping = lookup_response.get("location", {}) if isinstance(lookup_response.get("location", {}), dict) else {}
+        local_lan_ip = str(client_context.get("client_local_ip", "")).strip() or str(request_mapping.get("client_local_ip", "")).strip() or "-"
+        local_public_ip = str(lookup_response.get("ip", "")).strip() or str(request_mapping.get("request_source_ip", "")).strip() or "-"
+        speed_server_domain = str(output_mapping.get("speed_server", "")).strip() or "-"
+        speed_server_ips = self.resolve_host_ips(speed_server_domain) if speed_server_domain not in ("", "-") else []
+        speed_server_ip = self.choose_speed_server_ip(speed_server_domain, speed_server_ips) if speed_server_domain not in ("", "-") else "-"
+        speed_interface = str(output_mapping.get("speed_interface", "")).strip() or "-"
+        interface_ip = self.resolve_interface_ipv4(speed_interface) or "-"
+        if interface_ip in ("", "-", "127.0.0.1"):
+            local_speed_ip = local_lan_ip
+        else:
+            local_speed_ip = interface_ip
+        speed_server_geo = self.lookup_ip_geo(speed_server_ip) if speed_server_ip != "-" else {}
+        speed_server_location = self.join_parts([speed_server_geo.get("city", ""), speed_server_geo.get("region", ""), speed_server_geo.get("country", "")]) or "-"
+        local_geo = self.lookup_ip_geo(local_public_ip) if self.is_ip_value(local_public_ip) else {}
+        local_geo_latitude = local_geo.get("latitude", "") or location_mapping.get("latitude", "")
+        local_geo_longitude = local_geo.get("longitude", "") or location_mapping.get("longitude", "")
+        distance_km = self.haversine_km(local_geo_latitude, local_geo_longitude, speed_server_geo.get("latitude", ""), speed_server_geo.get("longitude", ""))
+        network_mode, network_note = self.detect_network_mode(speed_interface)
+        output_mapping["local_lan_ip"] = local_lan_ip
+        output_mapping["local_public_ip"] = local_public_ip
+        output_mapping["local_speed_ip"] = local_speed_ip
+        output_mapping["speed_server_domain"] = speed_server_domain
+        output_mapping["speed_server_ip"] = speed_server_ip
+        output_mapping["speed_server_location"] = speed_server_location
+        output_mapping["speed_route"] = f"{local_speed_ip} -> {speed_server_ip}" if local_speed_ip != "-" and speed_server_ip != "-" else "-"
+        output_mapping["ip_distance"] = self.format_distance_text(distance_km)
+        output_mapping["distance_basis"] = "Local public IP geolocation -> speed remote IP geolocation"
+        output_mapping["network_mode"] = network_mode
+        output_mapping["network_note"] = network_note
+        output_mapping["speed_scope"] = "Speed is measured on your current active route (VPN included if active)"
+        return output_mapping
+
     def build_speed_test_mapping_from_output(self, output_text, default_source):
         combined_responsiveness = self.extract_speed_text(output_text, r"Responsiveness:\s*([^\n]+)")
         downlink_responsiveness = self.extract_speed_text(output_text, r"(?:Downlink|Download|Downstream)\s+Responsiveness:\s*([^\n]+)")
@@ -371,7 +648,9 @@ class IPTestRuntimeClient:
 
     def print_speed_test_progress(self, progress_percent, download_speed, upload_speed):
         bounded_percent = max(0, min(100, int(progress_percent)))
-        progress_text = f"Local speed test progress: {bounded_percent:3d}% | Download {download_speed} | Upload {upload_speed}"
+        download_mb_text = self.convert_to_mb_per_sec(download_speed) if str(download_speed).strip() not in ("", "-") else "-"
+        upload_mb_text = self.convert_to_mb_per_sec(upload_speed) if str(upload_speed).strip() not in ("", "-") else "-"
+        progress_text = f"Local speed test progress: {bounded_percent:3d}% | Download {download_mb_text} | Upload {upload_mb_text}"
         sys.stdout.write(f"\r{progress_text}   ")
         sys.stdout.flush()
 
@@ -482,12 +761,12 @@ class IPTestRuntimeClient:
         normalized_rows = []
         for key_text, value in rows_list:
             normalized_value = self.normalize_value(value)
-            normalized_rows.append((key_text, normalized_value))
+            normalized_rows.append((self.emoji_label(key_text), normalized_value))
         if not normalized_rows:
             return
         key_width = max(self.display_width("Field"), max(self.display_width(key_text) for key_text, _ in normalized_rows))
         max_value_size = max(self.display_width("Value"), max(self.display_width(value_text) for _, value_text in normalized_rows))
-        terminal_columns = shutil.get_terminal_size(fallback=(140, 20)).columns
+        terminal_columns = min(140, shutil.get_terminal_size(fallback=(140, 20)).columns)
         available_value_width = terminal_columns - key_width - 7
         if available_value_width < 36:
             available_value_width = 36
@@ -506,15 +785,15 @@ class IPTestRuntimeClient:
         print(separator_text)
 
     def print_compact_two_side_table(self, title_text, left_title, left_rows, right_title, right_rows):
-        normalized_left_rows = [(str(key_text), self.normalize_value(value)) for key_text, value in left_rows]
-        normalized_right_rows = [(str(key_text), self.normalize_value(value)) for key_text, value in right_rows]
+        normalized_left_rows = [(self.emoji_label(key_text), self.normalize_value(value)) for key_text, value in left_rows]
+        normalized_right_rows = [(self.emoji_label(key_text), self.normalize_value(value)) for key_text, value in right_rows]
         if not normalized_left_rows and not normalized_right_rows:
             return
         left_key_width = max(self.display_width(left_title), max((self.display_width(key_text) for key_text, _ in normalized_left_rows), default=0))
         right_key_width = max(self.display_width(right_title), max((self.display_width(key_text) for key_text, _ in normalized_right_rows), default=0))
         left_key_width = max(12, min(24, left_key_width))
         right_key_width = max(12, min(24, right_key_width))
-        terminal_columns = shutil.get_terminal_size(fallback=(180, 20)).columns
+        terminal_columns = min(180, shutil.get_terminal_size(fallback=(180, 20)).columns)
         fixed_width = 13
         available_value_width = terminal_columns - fixed_width - left_key_width - right_key_width
         if available_value_width < 48:
@@ -556,6 +835,8 @@ class IPTestRuntimeClient:
                 right_key_cell = right_key_text if line_index == 0 else ""
                 left_value_cell = left_value_lines[line_index] if line_index < len(left_value_lines) else ""
                 right_value_cell = right_value_lines[line_index] if line_index < len(right_value_lines) else ""
+                if line_index > 0 and left_value_cell == "" and right_value_cell == "":
+                    continue
                 print(f"| {self.pad_display(left_key_cell, left_key_width)} | {self.pad_display(left_value_cell, left_value_width)} | {self.pad_display(right_key_cell, right_key_width)} | {self.pad_display(right_value_cell, right_value_width)} |")
         print(separator_text)
 
@@ -588,7 +869,7 @@ class IPTestRuntimeClient:
             ("Is EU", country_details.get("is_eu", "")),
             ("District", country_details.get("district", "")),
             ("Currency", country_details.get("currency", "")),
-            ("Flag Emoji", country_details.get("flag_emoji", "")),
+            ("Flag Emoji", self.flag_emoji_to_text(country_details.get("flag_emoji", ""))),
             ("Flag Image URL", country_details.get("flag_image_url", "")),
             ("ASN", network_mapping.get("asn", "")),
             ("ISP", network_mapping.get("isp", "")),
@@ -606,6 +887,19 @@ class IPTestRuntimeClient:
             ("Timezone Is DST", timezone_mapping.get("is_dst", ""))
         ]
 
+    def flag_emoji_to_text(self, flag_value):
+        text_value = str(flag_value).strip()
+        if not text_value:
+            return "-"
+        letters_value = []
+        for char_value in text_value:
+            code_value = ord(char_value)
+            if 0x1F1E6 <= code_value <= 0x1F1FF:
+                letters_value.append(chr(code_value - 0x1F1E6 + ord("A")))
+        if len(letters_value) >= 2:
+            return "".join(letters_value)
+        return text_value
+
     def build_client_timing_rows(self, timing_mapping, request_mapping):
         return [
             ("Client Sent (UTC)", timing_mapping.get("client_sent_at_utc", "")),
@@ -622,20 +916,22 @@ class IPTestRuntimeClient:
         ]
 
     def build_local_speed_detail_rows(self, speed_test_mapping):
-        speed_server = speed_test_mapping.get("speed_server", "-")
-        speed_path = f"Local machine -> {speed_server}" if str(speed_server).strip() else "Local machine -> -"
+        speed_server_domain = speed_test_mapping.get("speed_server_domain", speed_test_mapping.get("speed_server", "-"))
         return [
             ("Local Download", self.convert_to_mb_per_sec(speed_test_mapping.get("download_speed", "-"))),
             ("Local Upload", self.convert_to_mb_per_sec(speed_test_mapping.get("upload_speed", "-"))),
-            ("Download Raw", speed_test_mapping.get("download_speed", "-")),
-            ("Upload Raw", speed_test_mapping.get("upload_speed", "-")),
-            ("Speed Path", speed_path),
-            ("Speed Server", speed_server),
+            ("Network Mode", speed_test_mapping.get("network_mode", "-")),
+            ("Speed Local IP", speed_test_mapping.get("local_speed_ip", "-")),
+            ("Local Public IP", speed_test_mapping.get("local_public_ip", "-")),
+            ("Speed Domain", speed_server_domain),
+            ("Speed Remote IP", speed_test_mapping.get("speed_server_ip", "-")),
+            ("IP Path", speed_test_mapping.get("speed_route", "-")),
+            ("IP Distance", speed_test_mapping.get("ip_distance", "-")),
+            ("Server Location", speed_test_mapping.get("speed_server_location", "-")),
             ("Speed Interface", speed_test_mapping.get("speed_interface", "-")),
             ("Local Latency", speed_test_mapping.get("idle_latency", "-")),
             ("Local Down Resp", speed_test_mapping.get("downlink_responsiveness", "-")),
-            ("Local Up Resp", speed_test_mapping.get("uplink_responsiveness", "-")),
-            ("Local Speed Note", speed_test_mapping.get("source", "-"))
+            ("Local Up Resp", speed_test_mapping.get("uplink_responsiveness", "-"))
         ]
 
     def print_lookup_response(self, response_mapping, user_target_text):
@@ -686,8 +982,9 @@ class IPTestRuntimeClient:
         if not lookup_target:
             print("\nRunning local speed test (general local machine network)...")
             speed_test_mapping = self.run_local_speed_test_with_progress()
-            right_rows.extend(self.build_local_speed_detail_rows(speed_test_mapping))
-        self.print_compact_two_side_table("📚 Details", "Lookup Details", lookup_rows, "Client / Local", right_rows)
+            enriched_speed_mapping = self.enrich_speed_test_mapping(speed_test_mapping, lookup_response, client_context)
+            right_rows.extend(self.build_local_speed_detail_rows(enriched_speed_mapping))
+        self.print_compact_two_side_table("📚 Details", "🌍 Lookup Details", lookup_rows, "🧭 Client / ⚡ Local", right_rows)
         return response_status
 
 
