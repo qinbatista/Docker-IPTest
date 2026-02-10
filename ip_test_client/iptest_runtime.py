@@ -142,7 +142,7 @@ class IPTestRuntimeClient:
                         return configured_value
             except Exception:
                 pass
-        return "timov4.qinyupeng.com:8000"
+        return "127.0.0.1:8000"
 
     def fetch_text(self, request_url):
         try:
