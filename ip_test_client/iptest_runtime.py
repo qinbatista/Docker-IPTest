@@ -83,7 +83,6 @@ class IPTestRuntimeClient:
             "Timezone": "🕒",
             "Timezone Abbr": "🕰",
             "UTC Offset": "🕒",
-            "Timezone Offset Seconds": "⏳",
             "Timezone Current Time": "🕑",
             "Timezone Is DST": "🌞",
             "Client Sent (UTC)": "📤",
@@ -91,7 +90,6 @@ class IPTestRuntimeClient:
             "Time Gap (ms)": "🕒",
             "Time Gap (seconds)": "⏳",
             "Client Timezone": "🕒",
-            "Client UTC Offset Minutes": "🕒",
             "Clock Skew Detected": "⚠",
             "Request Source IP": "📌",
             "Client Hostname": "💻",
@@ -111,6 +109,7 @@ class IPTestRuntimeClient:
             "Speed Remote IP": "🛰",
             "IP Path": "🛤",
             "IP Distance": "📏",
+            "Speed Test Distance": "📏",
             "Distance Basis": "📚",
             "Server Location": "📍",
             "Speed Interface": "🔌",
@@ -242,7 +241,6 @@ class IPTestRuntimeClient:
         print(f"Time Gap (ms): {timing_mapping.get('gap_ms', '')}")
         print(f"Time Gap (seconds): {timing_mapping.get('gap_seconds', '')}")
         print(f"Client Timezone: {timing_mapping.get('client_timezone_name', '')}")
-        print(f"Client UTC Offset Minutes: {timing_mapping.get('client_utc_offset_minutes', '')}")
         if timing_mapping.get("clock_skew_detected", False):
             print("Clock Skew Detected: true")
 
@@ -461,6 +459,49 @@ class IPTestRuntimeClient:
                 output_values.append(resolved_ip)
         return output_values
 
+    def resolve_host_ips_cloudflare_dns(self, host_value):
+        request_url = f"https://cloudflare-dns.com/dns-query?name={urllib.parse.quote(str(host_value).strip())}&type=A"
+        try:
+            request_value = urllib.request.Request(request_url, headers={"accept": "application/dns-json"})
+            with urllib.request.urlopen(request_value, timeout=10) as response_value:
+                response_mapping = json.loads(response_value.read().decode("utf-8"))
+        except Exception:
+            return []
+        answer_values = response_mapping.get("Answer", []) if isinstance(response_mapping.get("Answer", []), list) else []
+        output_values = []
+        for answer_value in answer_values:
+            if not isinstance(answer_value, dict):
+                continue
+            resolved_ip = str(answer_value.get("data", "")).strip()
+            if self.is_ip_value(resolved_ip) and resolved_ip not in output_values:
+                output_values.append(resolved_ip)
+        return output_values
+
+    def resolve_host_ips_nslookup(self, host_value):
+        output_values = []
+        for dns_server in ("8.8.8.8", "1.1.1.1"):
+            try:
+                command_result = subprocess.run(["nslookup", str(host_value).strip(), dns_server], capture_output=True, text=True, timeout=8)
+            except Exception:
+                continue
+            output_text = f"{command_result.stdout}\n{command_result.stderr}"
+            for matched_ip in re.findall(r"\bAddress:\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\b", output_text):
+                if not self.is_public_ipv4(matched_ip):
+                    continue
+                if matched_ip in (dns_server, "127.0.0.1"):
+                    continue
+                if matched_ip not in output_values:
+                    output_values.append(matched_ip)
+        return output_values
+
+    def normalize_host_value(self, host_value):
+        raw_text = str(host_value).strip()
+        if not raw_text or raw_text == "-":
+            return ""
+        parsed_value = urllib.parse.urlparse(raw_text if "://" in raw_text else f"//{raw_text}")
+        normalized_host = (parsed_value.hostname or raw_text).strip().strip(".")
+        return normalized_host
+
     def choose_ipv4(self, ip_values):
         for ip_value in ip_values:
             if self.is_ip_value(ip_value):
@@ -468,8 +509,12 @@ class IPTestRuntimeClient:
         return ip_values[0] if ip_values else ""
 
     def choose_speed_server_ip(self, host_value, local_resolved_ips):
+        normalized_host = self.normalize_host_value(host_value)
+        if not normalized_host:
+            return ""
         combined_values = []
-        for ip_value in local_resolved_ips + self.resolve_host_ips_public_dns(host_value):
+        combined_source_values = local_resolved_ips + self.resolve_host_ips_public_dns(normalized_host) + self.resolve_host_ips_cloudflare_dns(normalized_host) + self.resolve_host_ips_nslookup(normalized_host)
+        for ip_value in combined_source_values:
             if ip_value and ip_value not in combined_values:
                 combined_values.append(ip_value)
         for ip_value in combined_values:
@@ -540,6 +585,11 @@ class IPTestRuntimeClient:
         distance_miles = distance_km * 0.621371
         return f"{distance_km:.1f} km ({distance_miles:.1f} mi)"
 
+    def format_distance_km_text(self, distance_km):
+        if distance_km is None:
+            return "-"
+        return f"{distance_km:.0f}KM"
+
     def detect_network_mode(self, interface_name):
         cleaned_name = str(interface_name).strip().lower()
         if not cleaned_name or cleaned_name == "-":
@@ -588,7 +638,7 @@ class IPTestRuntimeClient:
         location_mapping = lookup_response.get("location", {}) if isinstance(lookup_response.get("location", {}), dict) else {}
         local_lan_ip = str(client_context.get("client_local_ip", "")).strip() or str(request_mapping.get("client_local_ip", "")).strip() or "-"
         local_public_ip = str(lookup_response.get("ip", "")).strip() or str(request_mapping.get("request_source_ip", "")).strip() or "-"
-        speed_server_domain = str(output_mapping.get("speed_server", "")).strip() or "-"
+        speed_server_domain = self.normalize_host_value(output_mapping.get("speed_server", "")) or "-"
         speed_server_ips = self.resolve_host_ips(speed_server_domain) if speed_server_domain not in ("", "-") else []
         speed_server_ip = self.choose_speed_server_ip(speed_server_domain, speed_server_ips) if speed_server_domain not in ("", "-") else "-"
         speed_interface = str(output_mapping.get("speed_interface", "")).strip() or "-"
@@ -612,6 +662,7 @@ class IPTestRuntimeClient:
         output_mapping["speed_server_location"] = speed_server_location
         output_mapping["speed_route"] = f"{local_speed_ip} -> {speed_server_ip}" if local_speed_ip != "-" and speed_server_ip != "-" else "-"
         output_mapping["ip_distance"] = self.format_distance_text(distance_km)
+        output_mapping["speed_test_distance"] = self.format_distance_km_text(distance_km)
         output_mapping["distance_basis"] = "Local public IP geolocation -> speed remote IP geolocation"
         output_mapping["network_mode"] = network_mode
         output_mapping["network_note"] = network_note
@@ -882,7 +933,6 @@ class IPTestRuntimeClient:
             ("Timezone", timezone_mapping.get("id", "")),
             ("Timezone Abbr", timezone_mapping.get("abbr", "")),
             ("UTC Offset", timezone_mapping.get("utc_offset", "")),
-            ("Timezone Offset Seconds", timezone_mapping.get("offset_seconds", "")),
             ("Timezone Current Time", timezone_mapping.get("current_time", "")),
             ("Timezone Is DST", timezone_mapping.get("is_dst", ""))
         ]
@@ -907,7 +957,6 @@ class IPTestRuntimeClient:
             ("Time Gap (ms)", timing_mapping.get("gap_ms", "")),
             ("Time Gap (seconds)", timing_mapping.get("gap_seconds", "")),
             ("Client Timezone", timing_mapping.get("client_timezone_name", "")),
-            ("Client UTC Offset Minutes", timing_mapping.get("client_utc_offset_minutes", "")),
             ("Clock Skew Detected", timing_mapping.get("clock_skew_detected", "")),
             ("Request Source IP", request_mapping.get("request_source_ip", "")),
             ("Client Hostname", request_mapping.get("client_hostname", "")),
@@ -926,7 +975,7 @@ class IPTestRuntimeClient:
             ("Speed Domain", speed_server_domain),
             ("Speed Remote IP", speed_test_mapping.get("speed_server_ip", "-")),
             ("IP Path", speed_test_mapping.get("speed_route", "-")),
-            ("IP Distance", speed_test_mapping.get("ip_distance", "-")),
+            ("Speed Test Distance", speed_test_mapping.get("speed_test_distance", speed_test_mapping.get("ip_distance", "-"))),
             ("Server Location", speed_test_mapping.get("speed_server_location", "-")),
             ("Speed Interface", speed_test_mapping.get("speed_interface", "-")),
             ("Local Latency", speed_test_mapping.get("idle_latency", "-")),
